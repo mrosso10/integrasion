@@ -1,7 +1,16 @@
-# frozen_string_literal: true
-
 source "https://rubygems.org"
 
-# gem "rails"
+# Specify your gem's dependencies in integrasion.gemspec.
+gemspec
 
-gem "rails", "= 7.2.2.1"
+gem "puma"
+
+gem "sqlite3"
+
+gem "sprockets-rails"
+
+# Omakase Ruby styling [https://github.com/rails/rubocop-rails-omakase/]
+gem "rubocop-rails-omakase", require: false
+
+# Start debugger with binding.b [https://github.com/ruby/debug]
+# gem "debug", ">= 1.0.0"
