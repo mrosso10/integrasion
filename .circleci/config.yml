@@ -1,0 +1,129 @@
+version: 2.1
+executors:
+  ruby:
+    docker:
+      - image: cimg/ruby:3.3.4-browsers
+        environment:
+          PGHOST: 127.0.0.1
+          PGUSER: postgres
+          PGPASS: postgres
+          RAILS_ENV: test
+          BUNDLER_VERSION: 2.5.17
+          UNDERCOVER_VERSION: 0.5.0
+      - image: cimg/postgres:12.12
+        environment:
+          POSTGRES_DB: integrasion_test
+      - image: cimg/redis:7.0
+commands:
+  bundle_install:
+    description: Install Ruby dependencies with Bundler
+    steps:
+      - restore_cache:
+          keys:
+            - bundle-v2-{{ arch }}-{{ checksum ".ruby-version" }}-{{ checksum "Gemfile.lock" }}
+            - bundle-v2-{{ arch }}-{{ checksum ".ruby-version" }}-
+      - restore_cache:
+          keys:
+            - packages-v4-{{ arch }}-{{ checksum ".ruby-version" }}
+
+      - run: sudo apt-get --allow-releaseinfo-change update
+
+      - run:
+          command: |
+            if ! [[ -d vendor/apt ]]; then
+              mkdir -p vendor/apt
+            fi
+
+      # ruby-vips requerido por image_processing?
+      # poppler-utils requerido por PdfPreviewGenerator, para el binario pdftoppm
+      - run:
+          command: |
+            if ! [[ -d vendor/apt/archives ]]; then
+              sudo apt-get install --download-only ruby-vips poppler-utils
+              sudo cp -R /var/cache/apt vendor/
+              sudo chown -R circleci:circleci vendor/apt
+            fi
+
+            sudo dpkg -i vendor/apt/archives/*.deb
+
+      - run:
+          name: Install Ruby Dependencies
+          command: |
+            gem install bundler -v $BUNDLER_VERSION --conservative --no-document
+            gem install slim_lint
+            bundle config --local deployment true
+            bundle config --local path vendor/bundle
+            bundle config --local without production
+            bundle check || (bundle install --jobs=4 --retry=3 && bundle clean)
+      - save_cache:
+          paths:
+            - ./vendor/bundle
+          key: bundle-v2-{{ arch }}-{{ checksum ".ruby-version" }}-{{ checksum "Gemfile.lock" }}
+      - save_cache:
+          paths:
+            - vendor/apt
+          key: packages-v4-{{ arch }}-{{ checksum ".ruby-version" }}
+  set_up_database:
+    steps:
+      - run:
+          name: Set Up Database
+          command: |
+            bundle exec rails db:schema:load
+orbs:
+  browser-tools: circleci/browser-tools@1.4
+  node: circleci/node@5.2.0
+jobs:
+  lint-test:
+    executor: ruby
+    steps:
+      - node/install:
+          node-version: '20.11.0'
+
+      - checkout
+      - bundle_install
+      - run: corepack enable
+      - run: yarn install
+      - run: npm install -g stylelint eslint
+      - run:
+          name: Run Overcommit
+          command: |
+            gem install overcommit
+            git config --local user.name "Circle CI"
+            git config --local user.email ci@example.com
+            overcommit --sign
+            overcommit --run
+      - run:
+          name: Run Security Audits
+          command: |
+            bundle exec brakeman -q --no-summary --skip-files node_modules/ --force
+      # interactive:    bundle exec brakeman -q --no-summary --skip-files node_modules/ -I --force
+      #            bundle exec bundle-audit check --update -v
+
+      # Instalo solo el chrome
+      #- browser-tools/install-browser-tools
+      - browser-tools/install-chrome
+      - browser-tools/install-chromedriver
+
+      - set_up_database
+
+      - run:
+          name: Run tests
+          command: |
+            export PARALLEL_TEST_PROCESSORS=4
+            export DRIVER=selenium_chrome_headless_iphone
+            bundle exec rails db:schema:load
+            yarn build
+            yarn build:css
+            bundle exec rake app:assets:precompile
+            export LCOV=true
+            bundle exec rake rspec
+            gem install undercover -v $UNDERCOVER_VERSION
+            undercover --compare origin/main
+      - store_artifacts:
+          path: spec/dummy/tmp/capybara
+      - store_artifacts:
+          path: tmp/parallel_runtime_rspec.log
+workflows:
+  build-test:
+    jobs:
+      - lint-test
